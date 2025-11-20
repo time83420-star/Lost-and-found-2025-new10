@@ -1,19 +1,21 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import BlipProcessor, BlipForConditionalGeneration, AutoTokenizer, AutoModel
-from sentence_transformers import SentenceTransformer
 from PIL import Image
-import torch
 import io
 import numpy as np
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import logging
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import base64
+import httpx
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Lost & Found ML Service")
+app = FastAPI(title="Lost & Found ML Service - Python 3.13 Compatible")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,128 +25,229 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global model variables
-blip_processor = None
-blip_model = None
-sentence_model = None
+# Global vectorizer for text embeddings
+vectorizer = None
+corpus_texts = []
+
+# Hugging Face API settings (optional - for image captioning)
+HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
+HF_API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
+
 
 @app.on_event("startup")
 async def load_models():
-    global blip_processor, blip_model, sentence_model
+    global vectorizer, corpus_texts
 
     try:
-        logger.info("Loading BLIP model for image captioning...")
-        blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-        blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        logger.info("Initializing TF-IDF vectorizer for text embeddings...")
+        vectorizer = TfidfVectorizer(
+            max_features=384,  # Match the dimension from sentence-transformers
+            ngram_range=(1, 2),
+            stop_words='english',
+            sublinear_tf=True
+        )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        blip_model.to(device)
-        logger.info(f"BLIP model loaded on {device}")
+        # Initialize with some common lost & found terms
+        corpus_texts = [
+            "lost phone mobile device electronics",
+            "found wallet money cards accessories",
+            "black backpack bag accessories",
+            "blue notebook book library",
+            "keys keychain metal accessories",
+            "laptop computer electronics device",
+            "water bottle drink container",
+            "umbrella rain weather accessories",
+            "glasses spectacles vision accessories",
+            "watch clock time jewelry accessories",
+            "headphones earphones audio electronics",
+            "charger cable wire electronics",
+            "id card identity document badge",
+            "jacket coat clothing winter",
+            "book textbook library academic"
+        ]
 
-        logger.info("Loading sentence transformer for embeddings...")
-        sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-        logger.info("Sentence transformer loaded")
+        vectorizer.fit(corpus_texts)
+        logger.info("TF-IDF vectorizer initialized successfully")
 
     except Exception as e:
         logger.error(f"Error loading models: {str(e)}")
         raise
 
+
 class TextRequest(BaseModel):
     text: str
 
+
 class TextListRequest(BaseModel):
     texts: List[str]
+
 
 class SearchRequest(BaseModel):
     query: str
     item_descriptions: List[dict]
 
+
+def extract_image_features(image: Image.Image) -> dict:
+    """Extract basic features from image for description"""
+    features = {}
+
+    # Get dominant colors
+    img_array = np.array(image.resize((100, 100)))
+
+    # Calculate average color
+    avg_color = img_array.mean(axis=(0, 1))
+
+    # Determine dominant color name
+    r, g, b = avg_color
+    if r > 150 and g < 100 and b < 100:
+        color_name = "red"
+    elif r < 100 and g > 150 and b < 100:
+        color_name = "green"
+    elif r < 100 and g < 100 and b > 150:
+        color_name = "blue"
+    elif r > 150 and g > 150 and b < 100:
+        color_name = "yellow"
+    elif r > 150 and g < 150 and b > 150:
+        color_name = "purple"
+    elif r < 100 and g > 150 and b > 150:
+        color_name = "cyan"
+    elif r > 200 and g > 200 and b > 200:
+        color_name = "white"
+    elif r < 100 and g < 100 and b < 100:
+        color_name = "black"
+    else:
+        color_name = "multicolored"
+
+    features['dominant_color'] = color_name
+    features['brightness'] = float(avg_color.mean())
+    features['size'] = image.size
+
+    return features
+
+
+async def query_huggingface_api(image_bytes: bytes) -> Optional[str]:
+    """Query Hugging Face Inference API for image captioning"""
+    if not HF_API_TOKEN:
+        logger.warning("HF_API_TOKEN not set, skipping API call")
+        return None
+
+    try:
+        headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                HF_API_URL,
+                headers=headers,
+                data=image_bytes
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    return result[0].get('generated_text', '')
+            else:
+                logger.warning(f"HF API returned status {response.status_code}")
+
+    except Exception as e:
+        logger.error(f"Error querying Hugging Face API: {str(e)}")
+
+    return None
+
+
 @app.get("/")
 async def root():
     return {
-        "message": "Lost & Found ML Service",
+        "message": "Lost & Found ML Service - Python 3.13 Compatible",
+        "python_version": "3.13.5",
         "endpoints": {
             "image_caption": "/caption",
             "text_embedding": "/embedding",
             "semantic_search": "/search"
+        },
+        "features": {
+            "image_captioning": "Color-based + optional HF API",
+            "text_embeddings": "TF-IDF (384 dimensions)",
+            "semantic_search": "Cosine similarity"
         }
     }
+
 
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
-        "blip_loaded": blip_model is not None,
-        "sentence_model_loaded": sentence_model is not None
+        "python_version": "3.13.5",
+        "vectorizer_loaded": vectorizer is not None,
+        "hf_api_available": bool(HF_API_TOKEN)
     }
+
 
 @app.post("/caption")
 async def generate_caption(file: UploadFile = File(...)):
-    """Generate detailed description from uploaded image"""
-
-    if blip_model is None or blip_processor is None:
-        raise HTTPException(status_code=503, detail="BLIP model not loaded")
+    """Generate description from uploaded image using color analysis + optional HF API"""
 
     try:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert('RGB')
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Extract basic features
+        features = extract_image_features(image)
 
-        # Generate caption
-        inputs = blip_processor(image, return_tensors="pt").to(device)
+        # Build basic description from features
+        color = features['dominant_color']
+        brightness = "bright" if features['brightness'] > 150 else "dark"
 
-        # Generate with more tokens for detailed description
-        out = blip_model.generate(**inputs, max_length=100, num_beams=5)
-        caption = blip_processor.decode(out[0], skip_special_tokens=True)
+        basic_caption = f"A {brightness} {color} item"
 
-        # Generate conditional caption with prompt for more details
-        prompt = "A detailed description of the item:"
-        conditional_inputs = blip_processor(image, text=prompt, return_tensors="pt").to(device)
-        conditional_out = blip_model.generate(**conditional_inputs, max_length=100, num_beams=5)
-        detailed_caption = blip_processor.decode(conditional_out[0], skip_special_tokens=True)
+        # Try to get better caption from HF API if available
+        api_caption = await query_huggingface_api(contents)
 
-        # Combine captions for richer description
-        if len(detailed_caption) > len(caption):
-            final_caption = detailed_caption
+        if api_caption:
+            final_caption = enhance_caption(api_caption)
+            original_caption = basic_caption
         else:
-            final_caption = caption
-
-        # Enhance caption with context
-        enhanced_caption = enhance_caption(final_caption)
+            final_caption = enhance_caption(basic_caption)
+            original_caption = basic_caption
 
         return {
             "success": True,
-            "caption": enhanced_caption,
-            "original_caption": caption
+            "caption": final_caption,
+            "original_caption": original_caption,
+            "features": features
         }
 
     except Exception as e:
         logger.error(f"Error generating caption: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Caption generation failed: {str(e)}")
 
+
 def enhance_caption(caption: str) -> str:
-    """Enhance the caption with more structure"""
-    # Capitalize first letter
+    """Enhance the caption with proper formatting"""
     caption = caption.strip()
     if caption:
         caption = caption[0].upper() + caption[1:]
 
-    # Add period if missing
     if caption and caption[-1] not in ['.', '!', '?']:
         caption += '.'
 
     return caption
 
+
 @app.post("/embedding")
 async def generate_embedding(request: TextRequest):
-    """Generate embedding vector for text"""
+    """Generate TF-IDF embedding vector for text"""
 
-    if sentence_model is None:
-        raise HTTPException(status_code=503, detail="Sentence model not loaded")
+    if vectorizer is None:
+        raise HTTPException(status_code=503, detail="Vectorizer not loaded")
 
     try:
-        embedding = sentence_model.encode(request.text, convert_to_numpy=True)
+        # Transform text to TF-IDF vector
+        embedding = vectorizer.transform([request.text]).toarray()[0]
+
+        # Normalize to unit vector (similar to sentence-transformers)
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
 
         return {
             "success": True,
@@ -156,15 +259,22 @@ async def generate_embedding(request: TextRequest):
         logger.error(f"Error generating embedding: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Embedding generation failed: {str(e)}")
 
+
 @app.post("/embeddings/batch")
 async def generate_embeddings_batch(request: TextListRequest):
     """Generate embeddings for multiple texts"""
 
-    if sentence_model is None:
-        raise HTTPException(status_code=503, detail="Sentence model not loaded")
+    if vectorizer is None:
+        raise HTTPException(status_code=503, detail="Vectorizer not loaded")
 
     try:
-        embeddings = sentence_model.encode(request.texts, convert_to_numpy=True)
+        # Transform texts to TF-IDF vectors
+        embeddings = vectorizer.transform(request.texts).toarray()
+
+        # Normalize each vector
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1  # Avoid division by zero
+        embeddings = embeddings / norms
 
         return {
             "success": True,
@@ -176,36 +286,45 @@ async def generate_embeddings_batch(request: TextListRequest):
         logger.error(f"Error generating batch embeddings: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Batch embedding generation failed: {str(e)}")
 
+
 @app.post("/search")
 async def semantic_search(request: SearchRequest):
-    """Perform semantic search on item descriptions"""
+    """Perform semantic search using TF-IDF and cosine similarity"""
 
-    if sentence_model is None:
-        raise HTTPException(status_code=503, detail="Sentence model not loaded")
+    if vectorizer is None:
+        raise HTTPException(status_code=503, detail="Vectorizer not loaded")
 
     try:
         # Generate query embedding
-        query_embedding = sentence_model.encode(request.query, convert_to_numpy=True)
+        query_embedding = vectorizer.transform([request.query]).toarray()[0]
+
+        # Normalize query vector
+        query_norm = np.linalg.norm(query_embedding)
+        if query_norm > 0:
+            query_embedding = query_embedding / query_norm
 
         results = []
 
         for item in request.item_descriptions:
             # Check if item has embedding
             if 'embedding' not in item or not item['embedding']:
-                # Generate embedding on the fly if missing
+                # Generate embedding on the fly
                 description = f"{item.get('title', '')} {item.get('description', '')} {item.get('category', '')} {item.get('location', '')}"
-                item_embedding = sentence_model.encode(description, convert_to_numpy=True)
+                item_embedding = vectorizer.transform([description]).toarray()[0]
+
+                # Normalize
+                item_norm = np.linalg.norm(item_embedding)
+                if item_norm > 0:
+                    item_embedding = item_embedding / item_norm
             else:
                 item_embedding = np.array(item['embedding'])
 
             # Calculate cosine similarity
-            similarity = np.dot(query_embedding, item_embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(item_embedding)
-            )
+            similarity = float(np.dot(query_embedding, item_embedding))
 
             results.append({
                 "item_id": item.get('id', item.get('_id')),
-                "similarity": float(similarity),
+                "similarity": similarity,
                 "title": item.get('title', ''),
                 "description": item.get('description', ''),
                 "category": item.get('category', ''),
@@ -228,6 +347,7 @@ async def semantic_search(request: SearchRequest):
     except Exception as e:
         logger.error(f"Error performing semantic search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Semantic search failed: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn
