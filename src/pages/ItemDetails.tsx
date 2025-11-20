@@ -5,6 +5,7 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import VerificationModal from '../components/Messaging/VerificationModal';
+import SimilarItems from '../components/Items/SimilarItems';
 
 interface RawUserObj {
   id?: string;
@@ -335,6 +336,8 @@ const ItemDetails = () => {
         </div>
       </div>
 
+      <SimilarItems currentItemId={String(item.id ?? item._id ?? '')} limit={6} />
+
       {showVerification && item && item.verificationQuestion && (
         <VerificationModal
           itemId={String(item.id ?? item._id ?? '')}
@@ -343,7 +346,6 @@ const ItemDetails = () => {
           onSuccess={() => {
             setShowVerification(false);
             showToast('Answer verified! Chat request sent to owner.', 'success');
-            // Refresh chat request status
             fetchChatRequestStatus(String(item.id ?? item._id ?? ''));
           }}
         />

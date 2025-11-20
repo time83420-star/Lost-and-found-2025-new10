@@ -199,6 +199,68 @@ const searchItems = async (req, res) => {
   }
 };
 
+const getSimilarItems = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const limit = parseInt(req.query.limit) || 6;
+
+    const currentItem = await Item.findById(id);
+    if (!currentItem) {
+      return res.status(404).json({ message: 'Item not found' });
+    }
+
+    if (!currentItem.embedding || currentItem.embedding.length === 0) {
+      return res.json({ items: [], semantic: false });
+    }
+
+    const allItems = await Item.find({
+      _id: { $ne: id },
+      status: 'active',
+    })
+      .populate('user', 'name email')
+      .lean();
+
+    if (allItems.length === 0) {
+      return res.json({ items: [], semantic: false });
+    }
+
+    try {
+      const { performSemanticSearch } = require('../services/mlService');
+
+      const queryText = `${currentItem.title} ${currentItem.description} ${currentItem.category}`;
+      const semanticResults = await performSemanticSearch(queryText, allItems);
+
+      if (semanticResults && semanticResults.length > 0) {
+        const topResults = semanticResults
+          .filter((result) => result.similarity > 0.4)
+          .slice(0, limit)
+          .map((result) => ({
+            ...result,
+            id: result.item_id,
+            _id: result.item_id,
+          }));
+
+        return res.json({
+          items: topResults,
+          semantic: true,
+          count: topResults.length,
+        });
+      }
+    } catch (mlError) {
+      console.error('ML similarity search failed:', mlError);
+    }
+
+    const fallbackItems = allItems
+      .filter((item) => item.category === currentItem.category || item.location === currentItem.location)
+      .slice(0, limit);
+
+    res.json({ items: fallbackItems, semantic: false, count: fallbackItems.length });
+  } catch (error) {
+    console.error('getSimilarItems error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   createItem,
   getItems,
@@ -207,4 +269,5 @@ module.exports = {
   updateItemStatus,
   deleteItem,
   searchItems,
+  getSimilarItems,
 };

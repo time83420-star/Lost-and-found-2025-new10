@@ -7,6 +7,7 @@ const {
   updateItemStatus,
   deleteItem,
   searchItems,
+  getSimilarItems,
 } = require('../controllers/itemController');
 const { protect } = require('../middleware/auth');
 
@@ -16,6 +17,7 @@ router.post('/', protect, createItem);
 router.get('/', getItems);
 router.get('/my-items', protect, getUserItems);
 router.post('/search', searchItems);
+router.get('/:id/similar', getSimilarItems);
 router.get('/:id', getItemById);
 router.patch('/:id/status', protect, updateItemStatus);
 router.delete('/:id', protect, deleteItem);
