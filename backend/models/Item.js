@@ -63,6 +63,18 @@ const itemSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+    aiGeneratedDescription: {
+      type: String,
+      default: '',
+    },
+    embedding: {
+      type: [Number],
+      default: [],
+    },
+    embeddingGenerated: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

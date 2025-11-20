@@ -26,6 +26,8 @@ const BrowseItems: React.FC = () => {
   const [selectedLocation, setSelectedLocation] = useState('');
   const [selectedType, setSelectedType] = useState('');
   const [showFilters, setShowFilters] = useState(false);
+  const [useSemanticSearch, setUseSemanticSearch] = useState(true);
+  const [isSemanticResult, setIsSemanticResult] = useState(false);
   const { showToast } = useToast();
 
   // ensure frontend items always have an `id` string
@@ -120,11 +122,20 @@ const BrowseItems: React.FC = () => {
     if (!searchQuery.trim()) return;
 
     setLoading(true);
+    setIsSemanticResult(false);
     try {
-      const response = await api.post('/items/search', { query: searchQuery });
+      const response = await api.post('/items/search', {
+        query: searchQuery,
+        useSemanticSearch: useSemanticSearch
+      });
       console.log('search raw response:', response.data);
       const normalized = normalizeItems(response.data.items || []);
       setItems(normalized);
+      setIsSemanticResult(response.data.semantic || false);
+
+      if (response.data.semantic) {
+        showToast('AI-powered semantic search results', 'success');
+      }
     } catch (error: any) {
       console.error('search error:', error?.response?.data ?? error);
       showToast(error?.response?.data?.message || 'Search failed', 'error');
@@ -139,28 +150,47 @@ const BrowseItems: React.FC = () => {
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-4">Browse Items</h1>
 
-        <form onSubmit={handleSearch} className="flex space-x-2 mb-4">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search items (e.g., 'blue backpack near library')"
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          <button
-            type="submit"
-            className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-2"
-          >
-            <Search className="h-5 w-5" />
-            <span>Search</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowFilters(!showFilters)}
-            className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors"
-          >
-            <Filter className="h-5 w-5" />
-          </button>
+        <form onSubmit={handleSearch} className="space-y-3 mb-4">
+          <div className="flex space-x-2">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search items (e.g., 'blue backpack near library')"
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+            <button
+              type="submit"
+              className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-2"
+            >
+              <Search className="h-5 w-5" />
+              <span>Search</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFilters(!showFilters)}
+              className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors"
+            >
+              <Filter className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-3">
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useSemanticSearch}
+                onChange={(e) => setUseSemanticSearch(e.target.checked)}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700">Use AI-powered semantic search</span>
+            </label>
+            {isSemanticResult && (
+              <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-medium">
+                Semantic Results
+              </span>
+            )}
+          </div>
         </form>
 
         {showFilters && (

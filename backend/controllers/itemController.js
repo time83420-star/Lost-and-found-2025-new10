@@ -1,9 +1,27 @@
 const Item = require('../models/Item');
 const { uploadToCloudinary } = require('../services/storageService');
+const { generateTextEmbedding } = require('../services/mlService');
 
 const createItem = async (req, res) => {
   try {
-    const { title, description, category, location, type, imageUrl, verificationQuestion, verificationAnswer } = req.body;
+    const { title, description, category, location, type, imageUrl, verificationQuestion, verificationAnswer, aiGeneratedDescription } = req.body;
+
+    // Combine text for embedding generation
+    const textForEmbedding = `${title} ${description} ${category} ${location}`;
+
+    // Generate embedding (non-blocking fallback)
+    let embedding = [];
+    let embeddingGenerated = false;
+    try {
+      const generatedEmbedding = await generateTextEmbedding(textForEmbedding);
+      if (generatedEmbedding) {
+        embedding = generatedEmbedding;
+        embeddingGenerated = true;
+      }
+    } catch (mlError) {
+      console.error('Embedding generation failed:', mlError);
+      // Continue without embedding
+    }
 
     const item = await Item.create({
       user: req.user._id,
@@ -15,6 +33,9 @@ const createItem = async (req, res) => {
       imageUrl: imageUrl || '',
       verificationQuestion: verificationQuestion || '',
       verificationAnswer: verificationAnswer?.toLowerCase?.()?.trim?.() ?? '',
+      aiGeneratedDescription: aiGeneratedDescription || '',
+      embedding,
+      embeddingGenerated,
     });
 
     const populatedItem = await Item.findById(item._id).populate('user', 'name email');
@@ -117,12 +138,48 @@ const deleteItem = async (req, res) => {
 
 const searchItems = async (req, res) => {
   try {
-    const { query } = req.body;
+    const { query, useSemanticSearch } = req.body;
 
     if (!query || query.trim() === '') {
       return res.status(400).json({ message: 'Search query is required' });
     }
 
+    // If semantic search is requested, try ML-powered search first
+    if (useSemanticSearch) {
+      try {
+        const { performSemanticSearch } = require('../services/mlService');
+
+        // Get all active items
+        const allItems = await Item.find({ status: 'active' })
+          .populate('user', 'name email')
+          .lean();
+
+        // Perform semantic search
+        const semanticResults = await performSemanticSearch(query, allItems);
+
+        if (semanticResults && semanticResults.length > 0) {
+          // Filter results with similarity > 0.3 (threshold)
+          const filteredResults = semanticResults
+            .filter((result) => result.similarity > 0.3)
+            .map((result) => ({
+              ...result,
+              id: result.item_id,
+              _id: result.item_id,
+            }));
+
+          return res.json({
+            items: filteredResults,
+            semantic: true,
+            count: filteredResults.length
+          });
+        }
+      } catch (mlError) {
+        console.error('Semantic search failed, falling back to regex:', mlError);
+        // Fall through to regex search
+      }
+    }
+
+    // Fallback to regex-based search
     const items = await Item.find({
       status: 'active',
       $or: [
@@ -135,7 +192,7 @@ const searchItems = async (req, res) => {
       .populate('user', 'name email')
       .sort({ createdAt: -1 });
 
-    res.json({ items });
+    res.json({ items, semantic: false });
   } catch (error) {
     console.error('searchItems error:', error);
     res.status(500).json({ message: error.message });
