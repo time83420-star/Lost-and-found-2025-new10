@@ -30,7 +30,7 @@ const getItems = async (req, res) => {
   try {
     const { category, location, type, status } = req.query;
 
-    const filter = {};
+    const filter = { status: 'active' };
     if (category) filter.category = category.toLowerCase();
     if (location) filter.location = location.toLowerCase();
     if (type) filter.type = type;
@@ -124,6 +124,7 @@ const searchItems = async (req, res) => {
     }
 
     const items = await Item.find({
+      status: 'active',
       $or: [
         { title: { $regex: query, $options: 'i' } },
         { description: { $regex: query, $options: 'i' } },
